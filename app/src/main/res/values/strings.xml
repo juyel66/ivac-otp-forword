@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">IVAC Assistant Mobile</string>
+    <string name="welcome_title">IVAC Assistant Companion</string>
+    <string name="welcome_subtitle">Automated, secure SMS OTP relay between your phone and Chrome Extension for IVAC Bangladesh appointments.</string>
+    <string name="continue_button">Get Started</string>
+    <string name="connect_title">Connect Chrome Extension</string>
+    <string name="connect_subtitle">Enter the Extension Client Key displayed on your IVAC Assistant Chrome Extension popup under CONFIG.</string>
+    <string name="client_key_label">Extension Client Key</string>
+    <string name="client_key_hint">e.g. 6988-P97K</string>
+    <string name="connect_button">Pair Extension</string>
+    <string name="permission_title">SMS Permission</string>
+    <string name="permission_subtitle">IVAC Assistant requires SMS access exclusively to detect one-time login passwords (OTPs) sent by the IVAC visa portal.</string>
+    <string name="grant_permission">Grant SMS Permission</string>
+    <string name="dashboard_title">Dashboard</string>
+    <string name="status_connected">Connected &amp; Paired</string>
+    <string name="status_disconnected">Disconnected / Unpaired</string>
+    <string name="status_forwarding_active">SMS Forwarding Active</string>
+    <string name="status_forwarding_disabled">SMS Forwarding Paused</string>
+    <string name="disconnect_button">Disconnect Device</string>
+    <string name="reconnect_button">Test Connection</string>
+    <string name="phone_number_label">Registered Mobile Number</string>
+    <string name="phone_number_hint">e.g. 01712345678</string>
+</resources>
+
