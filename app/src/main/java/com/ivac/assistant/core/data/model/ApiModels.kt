@@ -51,6 +51,47 @@ data class OtpPollResponse(
 )
 
 /**
+ * Companion pairing initialization request: POST /v1/companion/pair/request
+ */
+data class CompanionPairRequest(
+    @SerializedName("clientKey") val clientKey: String,
+    @SerializedName("deviceId") val deviceId: String,
+    @SerializedName("deviceName") val deviceName: String,
+    @SerializedName("appVersion") val appVersion: String
+)
+
+/**
+ * Companion pairing initialization response: POST /v1/companion/pair/request
+ */
+data class CompanionPairResponse(
+    @SerializedName("ok") val ok: Boolean,
+    @SerializedName("message") val message: String? = null,
+    @SerializedName("pairingId") val pairingId: String? = null,
+    @SerializedName("challenge") val challenge: String? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("deviceToken") val deviceToken: String? = null
+)
+
+/**
+ * Companion pairing completion request: POST /v1/companion/pair/complete
+ */
+data class CompanionPairCompleteRequest(
+    @SerializedName("clientKey") val clientKey: String,
+    @SerializedName("deviceId") val deviceId: String,
+    @SerializedName("pairingId") val pairingId: String? = null,
+    @SerializedName("phone") val phone: String? = null
+)
+
+/**
+ * Companion pairing completion response: POST /v1/companion/pair/complete
+ */
+data class CompanionPairCompleteResponse(
+    @SerializedName("ok") val ok: Boolean,
+    @SerializedName("message") val message: String? = null,
+    @SerializedName("deviceToken") val deviceToken: String? = null
+)
+
+/**
  * Proposed secure pairing verification request.
  * Allows companion app to verify extension pairing with device identity.
  */
@@ -74,12 +115,19 @@ data class PairVerifyResponse(
 
 /**
  * Health check / ping response for verifying relay connectivity.
+ * Compatible with both root GET /health (status: "ok") and GET /v1/health (ok: true).
  */
 data class HealthCheckResponse(
-    @SerializedName("ok") val ok: Boolean,
-    @SerializedName("message") val message: String? = null,
-    @SerializedName("timestamp") val timestamp: Long? = null
-)
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("ok") val ok: Boolean = false,
+    @SerializedName("database") val database: String? = null,
+    @SerializedName("timestamp") val timestamp: String? = null,
+    @SerializedName("service") val service: String? = null,
+    @SerializedName("message") val message: String? = null
+) {
+    val isHealthy: Boolean
+        get() = ok || status.equals("ok", ignoreCase = true)
+}
 
 /**
  * UI State representation of the last forwarding activity.
