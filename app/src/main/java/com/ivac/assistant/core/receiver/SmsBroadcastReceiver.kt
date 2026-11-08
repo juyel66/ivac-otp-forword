@@ -68,28 +68,40 @@ class SmsBroadcastReceiver : BroadcastReceiver() {
                 }
 
                 val messageText = fullBody.toString()
+                val sender = originatingAddress.ifBlank { "IVAC_BD" }
 
-                // 1. Verify Sender pattern
-                val senderMatches = OtpParser.isAllowedSender(originatingAddress, senderFilters)
-
-                // 2. Verify IVAC Content pattern
-                val contentMatches = OtpParser.hasIvacContext(messageText, keywordFilters)
-
-                if (!senderMatches && !contentMatches) {
-                    // Not an IVAC message - silently drop without reading or saving
+                // 1. Verify Sender pattern against allowlist
+                if (!OtpParser.isAllowedSender(sender, senderFilters)) {
+                    // Not an allowed IVAC sender (bKash, Nagad, Gmail, Bank, etc.) -> silently drop
                     return@launch
                 }
 
-                // 3. Extract 6-digit OTP (handles both digits and spoken words)
+                // 2. Verify IVAC security context & phrases
+                if (!OtpParser.hasIvacContext(messageText, keywordFilters)) {
+                    prefs.recordForwardingEvent("Invalid SMS ignored: Unrelated SMS content", false)
+                    return@launch
+                }
+
+                // Record intermediate UI state: IVAC SMS detected
+                prefs.recordForwardingEvent("IVAC SMS detected", false)
+
+                // 3. Extract 6-digit OTP (converts word-form numbers e.g. "Two-Nine-Two-Four-Zero-Nine" to "292409")
                 val otp = OtpParser.extractOtp(messageText)
-                if (otp.isNullOrBlank()) {
-                    prefs.recordForwardingEvent("IVAC SMS detected, but no valid 6-digit OTP found", false)
+                if (otp.isNullOrBlank() || otp.length != 6) {
+                    prefs.recordForwardingEvent("Invalid SMS ignored: Incomplete or invalid sequence", false)
                     return@launch
                 }
 
-                // 4. Forward to backend relay
-                // (Note: forwardOtp never logs digits and handles duplicate prevention)
-                repository.forwardOtp(otp)
+                // Record intermediate UI state: OTP extracted successfully
+                prefs.recordForwardingEvent("OTP extracted successfully", false)
+
+                // 4. Forward authenticated numeric OTP to backend relay
+                // (Note: forwardOtp never logs digits and enforces duplicate prevention)
+                repository.forwardOtp(
+                    extractedOtp = otp,
+                    sender = sender,
+                    receivedAt = System.currentTimeMillis()
+                )
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing incoming SMS broadcast: ${e.message}")

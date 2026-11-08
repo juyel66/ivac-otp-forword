@@ -27,7 +27,7 @@ class OtpPushWorker(
             return Result.failure()
         }
 
-        return when (repository.forwardOtp(otp)) {
+        return when (repository.forwardOtp(otp, "IVAC_BD", timestamp)) {
             is Resource.Success -> Result.success()
             is Resource.Error -> {
                 if (runAttemptCount < 2) {

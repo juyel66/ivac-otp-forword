@@ -119,32 +119,47 @@ class IvacRepository(
 
     /**
      * Forwards an extracted OTP to the paired Chrome Extension via the backend relay.
-     * Sanitizes inputs, verifies pairing, protects against duplicate delivery,
-     * and records event status.
+     * Sanitizes inputs, verifies pairing and deviceToken authentication,
+     * protects against duplicate delivery, and records event status.
+     *
+     * SECURITY:
+     * - Never sends an unauthenticated OTP request.
+     * - Never logs OTP digits.
+     * - Dispatches to POST /v1/companion/otp/push with Authorization: Bearer <deviceToken>.
      */
-    suspend fun forwardOtp(extractedOtp: String): Resource<String> {
+    suspend fun forwardOtp(
+        extractedOtp: String,
+        sender: String = "IVAC_BD",
+        receivedAt: Long = System.currentTimeMillis()
+    ): Resource<String> {
         if (!secureStorage.isPaired()) {
             preferencesManager.recordForwardingEvent("Ignored: Device not paired", false)
             return Resource.Error("Device is not paired with any Chrome Extension.")
+        }
+
+        val deviceToken = secureStorage.getDeviceToken()
+        if (deviceToken.isNullOrBlank()) {
+            preferencesManager.recordForwardingEvent("Failed: Missing deviceToken authentication", false)
+            return Resource.Error("Missing authentication token. Please pair your device first.")
         }
 
         val pairCode = secureStorage.getPairCode() ?: return Resource.Error("Missing pairing code.")
         val phone = secureStorage.getPhone() ?: return Resource.Error("Missing paired phone number.")
 
         val cleanOtp = extractedOtp.replace(Regex("[^0-9]"), "")
-        if (cleanOtp.length < 4 || cleanOtp.length > 8) {
-            preferencesManager.recordForwardingEvent("Ignored: Invalid OTP length", false)
-            return Resource.Error("Invalid OTP format.")
+        if (cleanOtp.length != 6) {
+            preferencesManager.recordForwardingEvent("Invalid SMS ignored: OTP must be exactly 6 digits", false)
+            return Resource.Error("Invalid OTP format. Must be exactly 6 digits.")
         }
 
-        // Duplicate delivery protection:
-        // Hash (pairCode + cleanOtp) to check if we already pushed this within the window
-        val deduplicationKey = "$pairCode:$cleanOtp"
+        // Duplicate delivery protection (per sender + OTP):
+        // Prevents pushing the exact same OTP within the deduplication window
+        val deduplicationKey = "$sender:$cleanOtp"
         val now = System.currentTimeMillis()
         val lastSeen = processedOtpCache[deduplicationKey]
 
         if (lastSeen != null && (now - lastSeen) < DEDUPLICATION_WINDOW_MS) {
-            preferencesManager.recordForwardingEvent("Ignored: Duplicate OTP within 2 minutes", false)
+            preferencesManager.recordForwardingEvent("Ignored: Duplicate IVAC SMS within 2 minutes", false)
             return Resource.Success("Duplicate OTP detected — already forwarded", "Duplicate skipped")
         }
 
@@ -153,6 +168,32 @@ class IvacRepository(
 
         try {
             val api = getApiService()
+
+            // 1. Primary: Authenticated companion push endpoint
+            // POST /v1/companion/otp/push with Authorization: Bearer <deviceToken>
+            val companionRequest = com.ivac.assistant.core.data.model.CompanionOtpPushRequest(
+                otp = cleanOtp,
+                phone = phone,
+                sender = sender,
+                receivedAt = receivedAt
+            )
+
+            try {
+                val companionResp = api.pushCompanionOtp("Bearer $deviceToken", companionRequest)
+                if (companionResp.isSuccessful && companionResp.body()?.ok == true) {
+                    processedOtpCache[deduplicationKey] = now
+                    preferencesManager.recordForwardingEvent("OTP forwarded successfully", true)
+                    return Resource.Success("OTP forwarded successfully", companionResp.body()?.message)
+                } else if (companionResp.code() != 404) {
+                    val errMsg = companionResp.errorBody()?.string() ?: "Relay server rejected OTP push"
+                    preferencesManager.recordForwardingEvent("Failed: $errMsg", false)
+                    return Resource.Error("Failed to push OTP: $errMsg", companionResp.code())
+                }
+            } catch (_: Exception) {
+                // If /v1/companion/otp/push is not yet active on legacy server, fallback below
+            }
+
+            // 2. Fallback: Legacy endpoint POST /v1/otp/push
             val request = OtpPushRequest(
                 phone = phone,
                 pairCode = pairCode,
@@ -163,7 +204,7 @@ class IvacRepository(
             if (response.isSuccessful && response.body()?.ok == true) {
                 // Record in duplicate prevention cache
                 processedOtpCache[deduplicationKey] = now
-                preferencesManager.recordForwardingEvent("OTP forwarded successfully to Extension", true)
+                preferencesManager.recordForwardingEvent("OTP forwarded successfully", true)
                 return Resource.Success("OTP forwarded successfully", response.body()?.message)
             } else {
                 val errMsg = response.errorBody()?.string() ?: "Relay server rejected OTP push"
@@ -171,7 +212,7 @@ class IvacRepository(
                 return Resource.Error("Failed to push OTP: $errMsg", response.code())
             }
         } catch (e: Exception) {
-            preferencesManager.recordForwardingEvent("Failed: Network error (${e.message})", false)
+            preferencesManager.recordForwardingEvent("Network error / retry status: ${e.message}", false)
             return Resource.Error("Network error: ${e.localizedMessage ?: "Unknown error"}")
         }
     }

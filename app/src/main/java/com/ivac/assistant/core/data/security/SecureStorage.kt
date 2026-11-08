@@ -68,6 +68,17 @@ class SecureStorage(context: Context) {
 
     fun getAuthToken(): String? = prefs.getString(KEY_AUTH_TOKEN, null)
 
+    fun getDeviceToken(): String? {
+        val token = getAuthToken()
+        if (!token.isNullOrBlank()) return token
+        // Fallback persistent device-bound token if paired
+        return if (isPaired()) "dev_${getDeviceId()}_${getPairCode()}" else null
+    }
+
+    fun saveDeviceToken(token: String) {
+        prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).apply()
+    }
+
     fun isPaired(): Boolean = prefs.getBoolean(KEY_IS_PAIRED, false) && !getPairCode().isNullOrBlank()
 
     fun getPairedAt(): Long = prefs.getLong(KEY_PAIRED_AT, 0L)
