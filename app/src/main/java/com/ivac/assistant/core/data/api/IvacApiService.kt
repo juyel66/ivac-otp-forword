@@ -1,5 +1,6 @@
 package com.ivac.assistant.core.data.api
 
+import com.ivac.assistant.core.data.model.CompanionOtpPushRequest
 import com.ivac.assistant.core.data.model.HealthCheckResponse
 import com.ivac.assistant.core.data.model.OtpPollRequest
 import com.ivac.assistant.core.data.model.OtpPollResponse
@@ -10,9 +11,20 @@ import com.ivac.assistant.core.data.model.PairVerifyResponse
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
 
 interface IvacApiService {
+
+    /**
+     * Authenticated companion endpoint to push received OTP to relay store.
+     * POST /v1/companion/otp/push
+     */
+    @POST("v1/companion/otp/push")
+    suspend fun pushCompanionOtp(
+        @Header("Authorization") authorization: String,
+        @Body request: CompanionOtpPushRequest
+    ): Response<OtpPushResponse>
 
     /**
      * Existing backend endpoint to push received OTP to relay store.
