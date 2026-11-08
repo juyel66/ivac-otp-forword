@@ -18,9 +18,6 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
-
-        buildConfigField("String", "DEFAULT_BASE_URL", "\"https://api-ivacassistant.codiumzenit.com\"")
-        buildConfigField("String", "FALLBACK_BASE_URL", "\"http://10.0.2.2:3000\"")
     }
 
     buildTypes {
@@ -28,6 +25,8 @@ android {
             isDebuggable = true
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            buildConfigField("String", "DEFAULT_BASE_URL", "\"http://192.168.0.101:5000/v1/\"")
+            buildConfigField("String", "FALLBACK_BASE_URL", "\"http://10.0.2.2:5000/v1/\"")
         }
         release {
             isMinifyEnabled = false
@@ -35,6 +34,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "DEFAULT_BASE_URL", "\"https://api-ivacassistant.codiumzenit.com/v1/\"")
+            buildConfigField("String", "FALLBACK_BASE_URL", "\"https://api-ivacassistant.codiumzenit.com/v1/\"")
         }
     }
 
