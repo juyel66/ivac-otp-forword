@@ -27,15 +27,16 @@ object NetworkClient {
     private const val MAX_RETRIES = 3
 
     /**
-     * Interceptor that safely retries on network failures with exponential backoff.
+     * Interceptor that safely retries transient network failures with exponential backoff.
+     * Never retries 4xx client errors (400, 401, 403, 404) to avoid useless delays and rate limiting.
      */
     private val retryInterceptor = Interceptor { chain ->
-        var request = chain.request()
+        val request = chain.request()
         var response: Response? = null
         var exception: IOException? = null
         var tryCount = 0
 
-        while (tryCount < MAX_RETRIES && (response == null || !response.isSuccessful)) {
+        while (tryCount < MAX_RETRIES) {
             try {
                 if (tryCount > 0) {
                     val backoffMs = (1000L * (1 shl (tryCount - 1))).coerceAtMost(4000L)
@@ -45,7 +46,8 @@ object NetworkClient {
                 }
                 response?.close()
                 response = chain.proceed(request)
-                if (response.isSuccessful) {
+                // Stop retrying if successful or if it's a client error (4xx) that retrying won't fix
+                if (response.isSuccessful || response.code in 400..499) {
                     return@Interceptor response
                 }
             } catch (e: IOException) {
@@ -78,8 +80,16 @@ object NetworkClient {
         .retryOnConnectionFailure(true)
         .build()
 
+    fun getOkHttpClient(): OkHttpClient = okHttpClient
+
+    fun formatBaseUrl(rawUrl: String): String {
+        val trimmed = rawUrl.trim().removeSuffix("/")
+        val withV1 = if (trimmed.endsWith("/v1")) trimmed else "$trimmed/v1"
+        return "$withV1/"
+    }
+
     fun createApiService(baseUrl: String = BuildConfig.DEFAULT_BASE_URL): IvacApiService {
-        val formattedUrl = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
+        val formattedUrl = formatBaseUrl(baseUrl)
         return Retrofit.Builder()
             .baseUrl(formattedUrl)
             .client(okHttpClient)
