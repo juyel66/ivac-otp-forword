@@ -13,6 +13,17 @@ data class OtpPushRequest(
 )
 
 /**
+ * Secure payload for pushing an extracted OTP to companion endpoint:
+ * POST /v1/companion/otp/push
+ */
+data class CompanionOtpPushRequest(
+    @SerializedName("otp") val otp: String,
+    @SerializedName("phone") val phone: String,
+    @SerializedName("sender") val sender: String,
+    @SerializedName("receivedAt") val receivedAt: Long
+)
+
+/**
  * Response returned by backend POST /v1/otp/push.
  */
 data class OtpPushResponse(
