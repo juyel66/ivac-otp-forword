@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -67,7 +68,8 @@ fun ConnectExtensionScreen(
     uiState: UiState,
     onBack: () -> Unit,
     onPair: (key: String, phone: String) -> Unit,
-    onProceedToPermission: () -> Unit
+    onProceedToPermission: () -> Unit,
+    onOpenSettings: (() -> Unit)? = null
 ) {
     var rawKey by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
@@ -81,6 +83,13 @@ fun ConnectExtensionScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (onOpenSettings != null) {
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -149,7 +158,7 @@ fun ConnectExtensionScreen(
                     value = rawKey,
                     onValueChange = { input ->
                         val filtered = input.uppercase().filter { it.isLetterOrDigit() || it == '-' }
-                        if (filtered.length <= 9) {
+                        if (filtered.length <= 40) {
                             rawKey = filtered
                         }
                     },
@@ -174,13 +183,13 @@ fun ConnectExtensionScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Input Field: Mobile Number
+                // Input Field: Mobile Number (Optional)
                 OutlinedTextField(
                     value = phone,
                     onValueChange = { input ->
                         phone = input.filter { it.isDigit() || it == '+' }
                     },
-                    label = { Text(stringResource(R.string.phone_number_label)) },
+                    label = { Text("${stringResource(R.string.phone_number_label)} (Optional)") },
                     placeholder = { Text(stringResource(R.string.phone_number_hint)) },
                     leadingIcon = {
                         Icon(imageVector = Icons.Default.Phone, contentDescription = null, tint = Blue600)
@@ -195,7 +204,7 @@ fun ConnectExtensionScreen(
                     keyboardActions = KeyboardActions(
                         onDone = {
                             focusManager.clearFocus()
-                            if (rawKey.isNotBlank() && phone.isNotBlank()) {
+                            if (rawKey.isNotBlank()) {
                                 onPair(rawKey, phone)
                             }
                         }
@@ -293,7 +302,7 @@ fun ConnectExtensionScreen(
                             focusManager.clearFocus()
                             onPair(rawKey, phone)
                         },
-                        enabled = rawKey.isNotBlank() && phone.isNotBlank() && !uiState.isPairingLoading,
+                        enabled = rawKey.isNotBlank() && !uiState.isPairingLoading,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
