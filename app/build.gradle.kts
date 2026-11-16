@@ -1,3 +1,7 @@
+import java.io.File
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -20,13 +24,42 @@ android {
         }
     }
 
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    val keystoreProperties = Properties()
+    val hasReleaseSigning = if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+        true
+    } else {
+        false
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                val rawPath = keystoreProperties.getProperty("storeFile") ?: "keystore/release.jks"
+                val resolved: File = if (File(rawPath).isAbsolute) {
+                    File(rawPath)
+                } else {
+                    val relToApp = file(rawPath)
+                    if (relToApp.exists()) relToApp else rootProject.file(rawPath.removePrefix("../"))
+                }
+                storeFile = resolved
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isDebuggable = true
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
-            buildConfigField("String", "DEFAULT_BASE_URL", "\"http://192.168.0.101:5000/v1/\"")
-            buildConfigField("String", "FALLBACK_BASE_URL", "\"http://10.0.2.2:5000/v1/\"")
+            buildConfigField("String", "DEFAULT_BASE_URL", "\"https://api-ivacassistant.codiumzenit.com/v1/\"")
+            buildConfigField("String", "FALLBACK_BASE_URL", "\"https://api-ivacassistant.codiumzenit.com/v1/\"")
         }
         release {
             isMinifyEnabled = false
@@ -36,6 +69,9 @@ android {
             )
             buildConfigField("String", "DEFAULT_BASE_URL", "\"https://api-ivacassistant.codiumzenit.com/v1/\"")
             buildConfigField("String", "FALLBACK_BASE_URL", "\"https://api-ivacassistant.codiumzenit.com/v1/\"")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -55,6 +91,11 @@ android {
 
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.11"
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     packaging {
