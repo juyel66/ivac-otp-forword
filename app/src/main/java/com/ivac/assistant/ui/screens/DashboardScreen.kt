@@ -22,11 +22,14 @@ import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SignalCellularAlt
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -365,7 +368,39 @@ fun DashboardScreen(
                 }
             }
 
-            // Last Activity Card
+            // Last Activity Card with Prominent Relay Status
+            val isSuccessStatus = lastForwardedStatus.startsWith("✓") ||
+                    lastForwardedStatus.contains("accepted", ignoreCase = true) ||
+                    lastForwardedStatus.contains("confirmed", ignoreCase = true)
+            val isFailedStatus = lastForwardedStatus.startsWith("✕") ||
+                    lastForwardedStatus.contains("failed", ignoreCase = true) ||
+                    lastForwardedStatus.contains("rejected", ignoreCase = true) ||
+                    lastForwardedStatus.contains("error", ignoreCase = true)
+            val isProgressStatus = lastForwardedStatus.contains("parsing", ignoreCase = true) ||
+                    lastForwardedStatus.contains("sending", ignoreCase = true) ||
+                    lastForwardedStatus.contains("detected", ignoreCase = true)
+
+            val badgeColor = when {
+                isSuccessStatus -> SuccessGreen
+                isFailedStatus -> ErrorRed
+                isProgressStatus -> Blue600
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+
+            val badgeText = when {
+                isSuccessStatus -> "ACCEPTED BY BACKEND"
+                isFailedStatus -> "RELAY FAILED"
+                isProgressStatus -> "PROCESSING OTP"
+                else -> "IDLE — WAITING FOR SMS"
+            }
+
+            val badgeIcon = when {
+                isSuccessStatus -> Icons.Default.CheckCircle
+                isFailedStatus -> Icons.Default.Error
+                isProgressStatus -> Icons.Default.Sync
+                else -> Icons.Default.Schedule
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -374,13 +409,44 @@ fun DashboardScreen(
                 )
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
-                    Text(
-                        text = "LAST RELAY ACTIVITY",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        letterSpacing = 1.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "LAST RELAY ACTIVITY",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            letterSpacing = 1.sp
+                        )
+
+                        // Status Badge
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(badgeColor.copy(alpha = 0.15f))
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = badgeIcon,
+                                contentDescription = null,
+                                tint = badgeColor,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = badgeText,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = badgeColor,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
                         text = lastForwardedStatus,
@@ -389,22 +455,26 @@ fun DashboardScreen(
                         color = MaterialTheme.colorScheme.onSurface
                     )
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                    Text(
-                        text = "Timestamp: $formattedTime",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Timestamp: $formattedTime",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Text(
-                        text = "Total OTPs Forwarded: $forwardedCount",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
-                        color = Blue600
-                    )
+                        Text(
+                            text = "Total Forwarded: $forwardedCount",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Blue600
+                        )
+                    }
                 }
             }
 
