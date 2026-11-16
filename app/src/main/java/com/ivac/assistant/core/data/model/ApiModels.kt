@@ -51,6 +51,16 @@ data class OtpPollResponse(
 )
 
 /**
+ * Nested data container returned by some proxy/wrapper responses.
+ */
+data class CompanionTokenData(
+    @SerializedName("deviceToken") val deviceToken: String? = null,
+    @SerializedName("token") val token: String? = null,
+    @SerializedName("pairingId") val pairingId: String? = null,
+    @SerializedName("status") val status: String? = null
+)
+
+/**
  * Companion pairing initialization request: POST /v1/companion/pair/request
  */
 data class CompanionPairRequest(
@@ -64,13 +74,26 @@ data class CompanionPairRequest(
  * Companion pairing initialization response: POST /v1/companion/pair/request
  */
 data class CompanionPairResponse(
-    @SerializedName("ok") val ok: Boolean,
+    @SerializedName("ok") val ok: Boolean = false,
     @SerializedName("message") val message: String? = null,
     @SerializedName("pairingId") val pairingId: String? = null,
     @SerializedName("challenge") val challenge: String? = null,
     @SerializedName("status") val status: String? = null,
-    @SerializedName("deviceToken") val deviceToken: String? = null
-)
+    @SerializedName("deviceToken") val deviceToken: String? = null,
+    @SerializedName("token") val token: String? = null,
+    @SerializedName("code") val code: String? = null,
+    @SerializedName("data") val data: CompanionTokenData? = null
+) {
+    val effectiveToken: String?
+        get() = (deviceToken?.takeIf { it.isNotBlank() }
+            ?: token?.takeIf { it.isNotBlank() }
+            ?: data?.deviceToken?.takeIf { it.isNotBlank() }
+            ?: data?.token?.takeIf { it.isNotBlank() })
+
+    val effectivePairingId: String?
+        get() = (pairingId?.takeIf { it.isNotBlank() }
+            ?: data?.pairingId?.takeIf { it.isNotBlank() })
+}
 
 /**
  * Companion pairing completion request: POST /v1/companion/pair/complete
@@ -86,10 +109,19 @@ data class CompanionPairCompleteRequest(
  * Companion pairing completion response: POST /v1/companion/pair/complete
  */
 data class CompanionPairCompleteResponse(
-    @SerializedName("ok") val ok: Boolean,
+    @SerializedName("ok") val ok: Boolean = false,
     @SerializedName("message") val message: String? = null,
-    @SerializedName("deviceToken") val deviceToken: String? = null
-)
+    @SerializedName("deviceToken") val deviceToken: String? = null,
+    @SerializedName("token") val token: String? = null,
+    @SerializedName("code") val code: String? = null,
+    @SerializedName("data") val data: CompanionTokenData? = null
+) {
+    val effectiveToken: String?
+        get() = (deviceToken?.takeIf { it.isNotBlank() }
+            ?: token?.takeIf { it.isNotBlank() }
+            ?: data?.deviceToken?.takeIf { it.isNotBlank() }
+            ?: data?.token?.takeIf { it.isNotBlank() })
+}
 
 /**
  * Proposed secure pairing verification request.
@@ -107,11 +139,20 @@ data class PairVerifyRequest(
  * Proposed pairing verification response.
  */
 data class PairVerifyResponse(
-    @SerializedName("ok") val ok: Boolean,
-    @SerializedName("message") val message: String?,
+    @SerializedName("ok") val ok: Boolean = false,
+    @SerializedName("message") val message: String? = null,
     @SerializedName("paired") val paired: Boolean = false,
-    @SerializedName("token") val token: String? = null
-)
+    @SerializedName("token") val token: String? = null,
+    @SerializedName("deviceToken") val deviceToken: String? = null,
+    @SerializedName("code") val code: String? = null,
+    @SerializedName("data") val data: CompanionTokenData? = null
+) {
+    val effectiveToken: String?
+        get() = (deviceToken?.takeIf { it.isNotBlank() }
+            ?: token?.takeIf { it.isNotBlank() }
+            ?: data?.deviceToken?.takeIf { it.isNotBlank() }
+            ?: data?.token?.takeIf { it.isNotBlank() })
+}
 
 /**
  * Health check / ping response for verifying relay connectivity.
