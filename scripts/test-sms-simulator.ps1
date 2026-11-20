@@ -72,7 +72,7 @@ switch ($choice) {
         Send-SimulatedSms -Sender "IVAC" -Message "Dear Applicant, your IVAC portal verification code is Four-Two-Zero-Three-One-Eight. Do not share with anyone."
     }
     "3" {
-        Send-SimulatedSms -Sender "BTCL" -Message "IVAC ভেরিফিকেশন কোড ৪২০৩১৮"
+        Send-SimulatedSms -Sender "IVAC" -Message "IVAC ভেরিফিকেশন কোড ৪২০৩১৮"
     }
     "4" {
         Send-SimulatedSms -Sender "CITYBANK" -Message "Your City Bank OTP is 987654 for transaction BDT 5000."
