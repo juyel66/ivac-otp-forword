@@ -17,3 +17,11 @@ app/build/
 *.apk
 *.aab
 
+# Keystore and Release Signing Credentials
+keystore/
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
+
