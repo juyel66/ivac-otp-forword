@@ -42,44 +42,52 @@ class SecureStorage(context: Context) {
         return prefs.getString(KEY_DEVICE_ID, null) ?: "and_default_dev"
     }
 
-    fun savePairing(pairCode: String, phone: String, token: String? = null) {
-        prefs.edit()
+    fun savePairing(pairCode: String, phone: String, token: String? = null): Boolean {
+        val editor = prefs.edit()
             .putString(KEY_PAIR_CODE, pairCode.trim())
             .putString(KEY_PHONE, phone.trim())
-            .putString(KEY_AUTH_TOKEN, token ?: "")
             .putBoolean(KEY_IS_PAIRED, true)
             .putLong(KEY_PAIRED_AT, System.currentTimeMillis())
-            .apply()
+
+        if (!token.isNullOrBlank()) {
+            editor.putString(KEY_AUTH_TOKEN, token.trim())
+        } else {
+            editor.remove(KEY_AUTH_TOKEN)
+        }
+        return editor.commit()
     }
 
-    fun clearPairing() {
-        prefs.edit()
+    fun clearPairing(): Boolean {
+        return prefs.edit()
             .remove(KEY_PAIR_CODE)
             .remove(KEY_PHONE)
             .remove(KEY_AUTH_TOKEN)
             .putBoolean(KEY_IS_PAIRED, false)
             .remove(KEY_PAIRED_AT)
-            .apply()
+            .commit()
     }
 
     fun getPairCode(): String? = prefs.getString(KEY_PAIR_CODE, null)
 
     fun getPhone(): String? = prefs.getString(KEY_PHONE, null)
 
-    fun getAuthToken(): String? = prefs.getString(KEY_AUTH_TOKEN, null)
-
-    fun getDeviceToken(): String? {
-        val token = getAuthToken()
-        if (!token.isNullOrBlank()) return token
-        // Fallback persistent device-bound token if paired
-        return if (isPaired()) "dev_${getDeviceId()}_${getPairCode()}" else null
+    fun getAuthToken(): String? {
+        val token = prefs.getString(KEY_AUTH_TOKEN, null)
+        return token?.takeIf { it.isNotBlank() }
     }
 
-    fun saveDeviceToken(token: String) {
-        prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).apply()
+    fun getDeviceToken(): String? = getAuthToken()
+
+    fun saveDeviceToken(token: String): Boolean {
+        return prefs.edit().putString(KEY_AUTH_TOKEN, token.trim()).commit()
     }
 
-    fun isPaired(): Boolean = prefs.getBoolean(KEY_IS_PAIRED, false) && !getPairCode().isNullOrBlank()
+    fun isPaired(): Boolean {
+        val pairedFlag = prefs.getBoolean(KEY_IS_PAIRED, false)
+        val hasPairCode = !getPairCode().isNullOrBlank()
+        val hasToken = !getAuthToken().isNullOrBlank()
+        return pairedFlag && hasPairCode && hasToken
+    }
 
     fun getPairedAt(): Long = prefs.getLong(KEY_PAIRED_AT, 0L)
 
