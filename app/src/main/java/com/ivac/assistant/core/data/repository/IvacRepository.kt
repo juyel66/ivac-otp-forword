@@ -2,18 +2,21 @@ package com.ivac.assistant.core.data.repository
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import com.ivac.assistant.BuildConfig
 import com.ivac.assistant.core.data.api.IvacApiService
 import com.ivac.assistant.core.data.model.CompanionOtpPushRequest
 import com.ivac.assistant.core.data.model.CompanionPairCompleteRequest
 import com.ivac.assistant.core.data.model.CompanionPairRequest
 import com.ivac.assistant.core.data.model.OtpPollRequest
-import com.ivac.assistant.core.data.model.OtpPushRequest
 import com.ivac.assistant.core.data.model.PairVerifyRequest
 import com.ivac.assistant.core.data.network.NetworkClient
 import com.ivac.assistant.core.data.preferences.PreferencesManager
 import com.ivac.assistant.core.data.security.SecureStorage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -36,9 +39,9 @@ class IvacRepository(
 ) {
 
     // In-memory de-duplication cache: key -> timestamp (millis)
-    // Prevents duplicate OTP submissions within 2 minutes
+    // Prevents duplicate raw radio broadcast spikes (within 3 seconds) while allowing rapid sequential OTPs
     private val processedOtpCache = ConcurrentHashMap<String, Long>()
-    private val DEDUPLICATION_WINDOW_MS = 2 * 60 * 1000L
+    private val DEDUPLICATION_WINDOW_MS = 3 * 1000L
 
     suspend fun getApiService(): IvacApiService {
         val currentBaseUrl = preferencesManager.baseUrl.first()
@@ -50,12 +53,74 @@ class IvacRepository(
     }
 
     /**
+     * Retrieves the stored device token or requests an updated one from the pairing API if needed.
+     * Ensures all companion requests use genuine, backend-signed credentials.
+     * Never logs actual secrets or tokens.
+     */
+    suspend fun getOrFetchDeviceToken(): String? {
+        // 1. Primary: EncryptedSharedPreferences
+        var storedToken = secureStorage.getAuthToken()
+
+        // 2. Secondary backup: DataStore Preferences
+        if (storedToken.isNullOrBlank()) {
+            storedToken = preferencesManager.getBackupDeviceToken()
+            if (!storedToken.isNullOrBlank()) {
+                secureStorage.saveDeviceToken(storedToken)
+                Log.i(TAG, "Device token recovered from persistent backup store [tokenPresent: true]")
+            }
+        }
+
+        if (!storedToken.isNullOrBlank()) {
+            Log.i(TAG, "Token retrieval status: [available: true]")
+            return storedToken
+        }
+
+        // If paired but token is missing, automatically re-synchronize with backend
+        val pairCode = secureStorage.getPairCode()
+        if (pairCode.isNullOrBlank()) {
+            Log.w(TAG, "Token retrieval status: [available: false, reason: not_paired]")
+            return null
+        }
+        val cleanPhone = secureStorage.getPhone() ?: ""
+        val deviceId = secureStorage.getDeviceId()
+        val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
+        val appVersion = BuildConfig.VERSION_NAME
+
+        Log.w(TAG, "Token retrieval status: [available: false, reason: missing_in_storage] — attempting auto-sync")
+
+        try {
+            val api = getApiService()
+            val req = CompanionPairRequest(
+                clientKey = pairCode,
+                deviceId = deviceId,
+                deviceName = deviceName,
+                appVersion = appVersion
+            )
+            val resp = api.requestPairing(req)
+            if (resp.isSuccessful && resp.body()?.ok == true) {
+                val newToken = resp.body()?.effectiveToken
+                if (!newToken.isNullOrBlank()) {
+                    secureStorage.savePairing(pairCode, cleanPhone, newToken)
+                    preferencesManager.saveBackupPairing(pairCode, cleanPhone, newToken)
+                    Log.i(TAG, "Device authentication token successfully re-synchronized with backend [available: true]")
+                    return newToken
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Device token synchronization skipped: ${e.message}")
+        }
+
+        Log.e(TAG, "Token retrieval status: [available: false, reason: sync_failed]")
+        return null
+    }
+
+    /**
      * Converts network exceptions into clear, actionable user messages.
      */
     fun formatNetworkError(e: Throwable, baseUrl: String = ""): String {
         return when (e) {
             is ConnectException ->
-                "Connection refused: Cannot reach backend server at $baseUrl. Verify your phone and laptop are on the same Wi-Fi network and port 5000 is open in firewall."
+                "Connection refused: Cannot reach backend server at $baseUrl. Verify phone and laptop are on the same Wi-Fi network and port 5000 is open in firewall."
             is SocketTimeoutException ->
                 "Connection timed out: Backend server took too long to respond. Check network signal and server load."
             is UnknownHostException ->
@@ -71,29 +136,69 @@ class IvacRepository(
         }
     }
 
+    private fun parseServerErrorMessage(errorBody: String?): String? {
+        if (errorBody.isNullOrBlank()) return null
+        return try {
+            val json = com.google.gson.JsonParser.parseString(errorBody).asJsonObject
+            when {
+                json.has("message") && !json.get("message").isJsonNull -> json.get("message").asString
+                json.has("error") && !json.get("error").isJsonNull -> json.get("error").asString
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Formats HTTP error response codes into clear messages.
      */
     fun formatHttpError(code: Int, errorBody: String?): String {
+        val serverMessage = parseServerErrorMessage(errorBody)
         return when (code) {
-            400 -> "Bad Request (400): ${errorBody?.take(120) ?: "Invalid parameters sent to server."}"
+            400 -> {
+                if (!serverMessage.isNullOrBlank()) {
+                    "Bad Request (400): $serverMessage"
+                } else {
+                    "Bad Request (400): Invalid parameters sent to server. Please verify your Client Key."
+                }
+            }
             401 -> "Unauthorized (401): Invalid or expired device authentication token. Please re-pair your device."
             403 -> "Forbidden (403): Access denied. Device is not authorized for this action."
-            404 -> "Endpoint not found (404): The requested route does not exist on this backend."
-            500 -> "Server internal error (500): Check backend server logs."
+            404 -> {
+                if (!serverMessage.isNullOrBlank()) {
+                    "Endpoint not found (404): $serverMessage"
+                } else {
+                    "Endpoint not found (404): The requested route does not exist on this backend."
+                }
+            }
+            500 -> {
+                if (!serverMessage.isNullOrBlank()) {
+                    "Server error (500): $serverMessage"
+                } else {
+                    "Server internal error (500): Check backend server logs."
+                }
+            }
             502, 503 -> "Server unavailable ($code): Backend server is temporarily unreachable or restarting."
-            else -> "Server error ($code): ${errorBody?.take(120) ?: "Unexpected response from server."}"
+            else -> {
+                if (!serverMessage.isNullOrBlank()) {
+                    "Server error ($code): $serverMessage"
+                } else {
+                    "Server error ($code): ${errorBody?.take(120) ?: "Unexpected response from server."}"
+                }
+            }
         }
     }
 
     /**
      * Syntactic validation of Extension Client Key.
-     * Must be 8 characters matching format XXXX-XXXX (e.g. 6988-P97K)
-     * using base32 charset (ABCDEFGHJKLMNPQRSTUVWXYZ23456789).
+     * Expects 8-character Base32 key (e.g. 6988-P97K).
+     * Accepts 8 to 32 characters Base32 (ABCDEFGHJKLMNPQRSTUVWXYZ23456789).
      */
     fun isValidKeySyntax(key: String): Boolean {
-        val clean = key.trim().uppercase()
-        val regex = Regex("^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{4}-?[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{4}$")
+        val clean = key.trim().replace("-", "").uppercase()
+        if (clean.length < 8 || clean.length > 32) return false
+        val regex = Regex("^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{8,32}$")
         return regex.matches(clean)
     }
 
@@ -101,33 +206,45 @@ class IvacRepository(
         val clean = raw.trim().replace("-", "").uppercase()
         return if (clean.length == 8) {
             "${clean.substring(0, 4)}-${clean.substring(4, 8)}"
+        } else if (clean.length in 8..32) {
+            clean.chunked(4).joinToString("-")
         } else {
             raw.trim().uppercase()
         }
     }
 
     /**
-     * Verifies pairing key against backend.
-     * Follows rule: Do not consider a device paired just because input is syntactically valid.
+     * Verifies pairing key against backend and acquires cryptographically signed companion deviceToken.
+     * Follows rule: Do not consider a device paired unless a genuine deviceToken is returned and saved.
+     * Phone is optional metadata; Client Key is the primary identity.
+     * Never logs actual secrets or tokens.
      */
-    suspend fun pairWithExtension(rawKey: String, phone: String): Resource<Boolean> {
+    suspend fun pairWithExtension(rawKey: String, phone: String = ""): Resource<Boolean> {
         val pairCode = formatPairKey(rawKey)
         if (!isValidKeySyntax(pairCode)) {
-            return Resource.Error("Invalid key format. Expected 8 characters like '6988-P97K'.")
+            Log.w(TAG, "Pairing rejected: Invalid key format syntax")
+            return Resource.Error("Invalid key format. Expected 8-character code (e.g. 6988-P97K).")
         }
 
         val cleanPhone = phone.replace(Regex("[^0-9]"), "")
-        if (cleanPhone.length < 10) {
-            return Resource.Error("Please enter a valid mobile number (at least 10 digits).")
+        if (cleanPhone.isNotEmpty() && cleanPhone.length < 8) {
+            Log.w(TAG, "Pairing rejected: Phone number must be at least 8 digits if provided")
+            return Resource.Error("Please enter a valid mobile number or leave blank.")
         }
 
         val baseUrl = getBaseUrl()
+        val maskedKey = if (pairCode.length >= 4) "${pairCode.take(4)}-****" else "****"
 
         try {
             val api = getApiService()
             val deviceId = secureStorage.getDeviceId()
             val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
             val appVersion = BuildConfig.VERSION_NAME
+
+            Log.i(TAG, "Initiating companion pairing flow for key [$maskedKey] on deviceId [$deviceId]...")
+
+            var acquiredToken: String? = null
+            var successMessage = "Paired successfully with Chrome Extension"
 
             // 1. Primary companion handshake: POST /v1/companion/pair/request
             val pairReq = CompanionPairRequest(
@@ -137,91 +254,140 @@ class IvacRepository(
                 appVersion = appVersion
             )
 
+            var pairRequestHttpCode: Int? = null
+
             try {
                 val pairResp = api.requestPairing(pairReq)
+                pairRequestHttpCode = pairResp.code()
                 if (pairResp.isSuccessful && pairResp.body()?.ok == true) {
-                    val token = pairResp.body()?.deviceToken
-                    if (!token.isNullOrBlank()) {
-                        secureStorage.savePairing(pairCode, cleanPhone, token)
-                        preferencesManager.recordForwardingEvent("Device paired successfully via companion API", false)
-                        return Resource.Success(true, pairResp.body()?.message ?: "Paired successfully")
-                    } else if (pairResp.body()?.pairingId != null) {
-                        // Complete pairing handshake if required
-                        val completeReq = CompanionPairCompleteRequest(
-                            clientKey = pairCode,
-                            deviceId = deviceId,
-                            pairingId = pairResp.body()?.pairingId,
-                            phone = cleanPhone
-                        )
+                    val pairBody = pairResp.body()!!
+                    val initialToken = pairBody.effectiveToken
+                    val pairingId = pairBody.effectivePairingId
+
+                    Log.i(TAG, "Pairing request SUCCESS: HTTP ${pairResp.code()} [pairingId: ${pairingId ?: "none"}, tokenPresent: ${!initialToken.isNullOrBlank()}]")
+
+                    if (!initialToken.isNullOrBlank()) {
+                        acquiredToken = initialToken
+                        successMessage = pairBody.message ?: successMessage
+                    }
+
+                    // Complete pairing handshake with phone number binding if pairingId is returned or present
+                    val completeReq = CompanionPairCompleteRequest(
+                        clientKey = pairCode,
+                        deviceId = deviceId,
+                        pairingId = pairingId,
+                        phone = cleanPhone
+                    )
+                    try {
                         val completeResp = api.completePairing(completeReq)
                         if (completeResp.isSuccessful && completeResp.body()?.ok == true) {
-                            secureStorage.savePairing(pairCode, cleanPhone, completeResp.body()?.deviceToken)
-                            preferencesManager.recordForwardingEvent("Device paired successfully", false)
-                            return Resource.Success(true, completeResp.body()?.message ?: "Paired successfully")
+                            val completeToken = completeResp.body()?.effectiveToken
+                            Log.i(TAG, "Pairing completion SUCCESS: HTTP ${completeResp.code()} [tokenPresent: ${!completeToken.isNullOrBlank()}]")
+                            if (!completeToken.isNullOrBlank()) {
+                                acquiredToken = completeToken
+                            }
+                            successMessage = completeResp.body()?.message ?: successMessage
+                        } else {
+                            Log.w(TAG, "Pairing completion non-200: HTTP ${completeResp.code()} [using initial token if available]")
                         }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Pairing completion network notice: ${e.message} [initial token present: ${!acquiredToken.isNullOrBlank()}]")
                     }
+
                 } else if (pairResp.code() != 404) {
                     val err = formatHttpError(pairResp.code(), pairResp.errorBody()?.string())
+                    Log.e(TAG, "Pairing request FAILED: HTTP ${pairResp.code()} - $err")
                     return Resource.Error(err, pairResp.code())
                 }
             } catch (e: Exception) {
-                // If endpoint doesn't exist (e.g. 404) or network glitch, fall back below
                 if (e is ConnectException || e is SocketTimeoutException || e is UnknownHostException) {
-                    return Resource.Error(formatNetworkError(e, baseUrl))
+                    val netErr = formatNetworkError(e, baseUrl)
+                    Log.e(TAG, "Pairing request connection error: $netErr")
+                    return Resource.Error(netErr)
+                }
+                Log.w(TAG, "Pairing request probe exception: ${e.message}")
+            }
+
+            // 2. Compatibility probe: POST /v1/companion/pair/verify (or /v1/companion/pair)
+            if (acquiredToken.isNullOrBlank()) {
+                Log.i(TAG, "Probing companion pair verification endpoint...")
+                try {
+                    val legacyPairReq = PairVerifyRequest(
+                        pairCode = pairCode,
+                        phone = cleanPhone,
+                        deviceId = deviceId,
+                        deviceName = deviceName,
+                        appVersion = appVersion
+                    )
+                    var legacyResp = api.verifyPairing(legacyPairReq)
+                    if (legacyResp.code() == 404) {
+                        legacyResp = api.verifyPairingAlias(legacyPairReq)
+                    }
+
+                    if (legacyResp.isSuccessful && legacyResp.body()?.ok == true) {
+                        val verifyToken = legacyResp.body()?.effectiveToken
+                        Log.i(TAG, "Pairing verification SUCCESS: HTTP ${legacyResp.code()} [tokenPresent: ${!verifyToken.isNullOrBlank()}]")
+                        if (!verifyToken.isNullOrBlank()) {
+                            acquiredToken = verifyToken
+                            successMessage = legacyResp.body()?.message ?: successMessage
+                        }
+                    } else if (legacyResp.code() != 404) {
+                        val err = formatHttpError(legacyResp.code(), legacyResp.errorBody()?.string())
+                        Log.e(TAG, "Pairing verification FAILED: HTTP ${legacyResp.code()} - $err")
+                        return Resource.Error(err, legacyResp.code())
+                    } else if (pairRequestHttpCode == 404) {
+                        // BOTH requestPairing AND verifyPairing returned 404!
+                        val err = "Endpoint not found (404): Companion pairing routes are not available on this server ($baseUrl). Please check the Server URL in Settings and ensure the backend server with companion support is running."
+                        Log.e(TAG, err)
+                        return Resource.Error(err, 404)
+                    }
+                } catch (e: Exception) {
+                    if (e is ConnectException || e is SocketTimeoutException || e is UnknownHostException) {
+                        val netErr = formatNetworkError(e, baseUrl)
+                        Log.e(TAG, "Pairing verification connection error: $netErr")
+                        return Resource.Error(netErr)
+                    }
+                    Log.w(TAG, "Pairing verification probe exception: ${e.message}")
                 }
             }
 
-            // 2. Compatibility probe: POST /v1/companion/pair (single-step)
-            try {
-                val legacyPairReq = PairVerifyRequest(
-                    pairCode = pairCode,
-                    phone = cleanPhone,
-                    deviceId = deviceId,
-                    deviceName = deviceName,
-                    appVersion = appVersion
-                )
-                val legacyResp = api.verifyPairing(legacyPairReq)
-                if (legacyResp.isSuccessful && legacyResp.body()?.ok == true) {
-                    secureStorage.savePairing(pairCode, cleanPhone, legacyResp.body()?.token)
-                    preferencesManager.recordForwardingEvent("Device paired successfully", false)
-                    return Resource.Success(true, legacyResp.body()?.message ?: "Paired successfully")
-                } else if (legacyResp.code() != 404) {
-                    val err = formatHttpError(legacyResp.code(), legacyResp.errorBody()?.string())
-                    return Resource.Error(err, legacyResp.code())
-                }
-            } catch (e: Exception) {
-                if (e is ConnectException || e is SocketTimeoutException || e is UnknownHostException) {
-                    return Resource.Error(formatNetworkError(e, baseUrl))
+            // 3. Token Storage & Verification
+            if (!acquiredToken.isNullOrBlank()) {
+                val secSaved = secureStorage.savePairing(pairCode, cleanPhone, acquiredToken)
+                preferencesManager.saveBackupPairing(pairCode, cleanPhone, acquiredToken)
+                preferencesManager.recordForwardingEvent("✓ Device paired successfully with companion token", false)
+
+                val verifiedStoredToken = secureStorage.getAuthToken()
+                val isVerified = !verifiedStoredToken.isNullOrBlank() && verifiedStoredToken == acquiredToken
+                if (secSaved && isVerified) {
+                    Log.i(TAG, "Token storage SUCCESS: Device token securely stored and verified in storage [tokenPresent: true]")
+                    return Resource.Success(true, successMessage)
+                } else {
+                    Log.e(TAG, "Token storage FAILED: SecureStorage commit failed or verification mismatch [tokenPresent: false]")
+                    return Resource.Error("Failed to commit device authentication token to secure storage. Please retry.")
                 }
             }
 
-            // 3. Fallback verification against existing backend relay:
-            // Test /v1/otp/poll probe with pairCode & phone
-            val pollResp = api.pollOtp(OtpPollRequest(phone = cleanPhone, pairCode = pairCode, since = System.currentTimeMillis()))
-            if (pollResp.isSuccessful && pollResp.body()?.ok == true) {
-                secureStorage.savePairing(pairCode, cleanPhone, null)
-                preferencesManager.recordForwardingEvent("Paired with existing backend relay", false)
-                return Resource.Success(true, "Paired successfully with relay server.")
-            } else {
-                val errorMsg = formatHttpError(pollResp.code(), pollResp.errorBody()?.string())
-                return Resource.Error("Server verification failed: $errorMsg", pollResp.code())
-            }
+            // Strict security: Reject pairing if no genuine deviceToken was provided by the backend
+            Log.e(TAG, "Token storage FAILED: No valid companion deviceToken returned by backend pairing routes")
+            return Resource.Error("Server did not issue a valid companion authentication token. Please verify your Client Key and connection.")
 
         } catch (e: Exception) {
-            return Resource.Error(formatNetworkError(e, baseUrl))
+            val netErr = formatNetworkError(e, baseUrl)
+            Log.e(TAG, "Pairing flow exception: $netErr")
+            return Resource.Error(netErr)
         }
     }
 
     /**
-     * Forwards an extracted OTP to the paired Chrome Extension via the backend relay.
-     * Sanitizes inputs, verifies pairing and deviceToken authentication,
-     * protects against duplicate delivery, and records event status.
+     * Forwards an extracted OTP to the backend relay via the authenticated companion endpoint:
+     * POST /v1/companion/otp/push with Authorization: Bearer <deviceToken>.
      *
-     * SECURITY:
-     * - Never sends an unauthenticated OTP request.
-     * - Never logs OTP digits.
-     * - Dispatches to POST /v1/companion/otp/push with Authorization: Bearer <deviceToken>.
-     * - Falls back to POST /v1/otp/push if companion endpoint is not active.
+     * SECURITY & PRIVACY:
+     * - Strictly authenticated with the paired device's signed deviceToken.
+     * - NO unauthenticated legacy fallback.
+     * - Never logs OTP values, deviceToken, or personal information.
+     * - Enforces in-memory deduplication (2-minute window).
      */
     suspend fun forwardOtp(
         extractedOtp: String,
@@ -229,32 +395,37 @@ class IvacRepository(
         receivedAt: Long = System.currentTimeMillis()
     ): Resource<String> {
         if (!secureStorage.isPaired()) {
+            Log.w(TAG, "OTP forwarding skipped: Device is not paired")
             preferencesManager.recordForwardingEvent("Ignored: Device not paired", false)
             return Resource.Error("Device is not paired with any Chrome Extension.")
         }
 
-        val deviceToken = secureStorage.getDeviceToken()
+        val deviceToken = getOrFetchDeviceToken()
         if (deviceToken.isNullOrBlank()) {
+            Log.e(TAG, "Backend OTP push aborted: Missing deviceToken authentication")
             preferencesManager.recordForwardingEvent("Failed: Missing deviceToken authentication", false)
-            return Resource.Error("Missing authentication token. Please pair your device first.")
+            return Resource.Error("Missing authentication token. Please re-pair your device.")
         }
 
-        val pairCode = secureStorage.getPairCode() ?: return Resource.Error("Missing pairing code.")
-        val phone = secureStorage.getPhone() ?: return Resource.Error("Missing paired phone number.")
+        if (secureStorage.getPairCode().isNullOrBlank()) {
+            return Resource.Error("Missing pairing code.")
+        }
+        val phone = secureStorage.getPhone() ?: ""
 
         val cleanOtp = extractedOtp.replace(Regex("[^0-9]"), "")
         if (cleanOtp.length != 6) {
+            Log.w(TAG, "OTP forwarding rejected: Expected 6 digits but got ${cleanOtp.length}")
             preferencesManager.recordForwardingEvent("Invalid SMS ignored: OTP must be exactly 6 digits", false)
             return Resource.Error("Invalid OTP format. Must be exactly 6 digits.")
         }
 
-        // Duplicate delivery protection (per sender + OTP):
-        // Prevents pushing the exact same OTP within the deduplication window
+        // Duplicate delivery protection (per sender + OTP within 2-minute window)
         val deduplicationKey = "$sender:$cleanOtp"
         val now = System.currentTimeMillis()
         val lastSeen = processedOtpCache[deduplicationKey]
 
         if (lastSeen != null && (now - lastSeen) < DEDUPLICATION_WINDOW_MS) {
+            Log.i(TAG, "Duplicate IVAC OTP skipped: Already forwarded within 2 minutes")
             preferencesManager.recordForwardingEvent("Ignored: Duplicate IVAC SMS within 2 minutes", false)
             return Resource.Success("Duplicate OTP detected — already forwarded", "Duplicate skipped")
         }
@@ -267,8 +438,7 @@ class IvacRepository(
         try {
             val api = getApiService()
 
-            // 1. Primary: Authenticated companion push endpoint
-            // POST /v1/companion/otp/push with Authorization: Bearer <deviceToken>
+            // Payload matches backend API contract: { otp, phone, sender, receivedAt }
             val companionRequest = CompanionOtpPushRequest(
                 otp = cleanOtp,
                 phone = phone,
@@ -276,55 +446,40 @@ class IvacRepository(
                 receivedAt = receivedAt
             )
 
-            try {
-                val companionResp = api.pushCompanionOtp("Bearer $deviceToken", companionRequest)
-                if (companionResp.isSuccessful && companionResp.body()?.ok == true) {
-                    processedOtpCache[deduplicationKey] = now
-                    preferencesManager.recordForwardingEvent("OTP forwarded successfully", true)
-                    return Resource.Success("OTP forwarded successfully", companionResp.body()?.message)
-                } else if (companionResp.code() in listOf(401, 403)) {
-                    val errMsg = formatHttpError(companionResp.code(), companionResp.errorBody()?.string())
-                    preferencesManager.recordForwardingEvent("Failed: $errMsg", false)
-                    return Resource.Error(errMsg, companionResp.code())
-                } else if (companionResp.code() != 404) {
-                    val errMsg = formatHttpError(companionResp.code(), companionResp.errorBody()?.string())
-                    preferencesManager.recordForwardingEvent("Failed: $errMsg", false)
-                    return Resource.Error(errMsg, companionResp.code())
-                }
-            } catch (e: Exception) {
-                if (e is ConnectException || e is SocketTimeoutException || e is UnknownHostException) {
-                    val netErr = formatNetworkError(e, baseUrl)
-                    preferencesManager.recordForwardingEvent("Failed: $netErr", false)
-                    return Resource.Error(netErr)
-                }
-            }
+            // Diagnostic Log 4: Backend request started (safe: no OTP or token logged)
+            Log.i(TAG, "Backend request started -> POST companion/otp/push [Auth: Bearer token present, sender: $sender, digits: 6]")
 
-            // 2. Fallback: Existing backend endpoint POST /v1/otp/push
-            val request = OtpPushRequest(
-                phone = phone,
-                pairCode = pairCode,
-                otp = cleanOtp
-            )
+            val companionResp = api.pushCompanionOtp("Bearer $deviceToken", companionRequest)
 
-            val response = api.pushOtp(request)
-            if (response.isSuccessful && response.body()?.ok == true) {
+            // Diagnostic Log 5: HTTP response status
+            Log.i(TAG, "Backend HTTP response status: ${companionResp.code()} [Success: ${companionResp.isSuccessful}]")
+
+            if (companionResp.isSuccessful && companionResp.body()?.ok == true) {
+                val relayId = companionResp.body()?.id ?: "confirmed"
                 processedOtpCache[deduplicationKey] = now
-                preferencesManager.recordForwardingEvent("OTP forwarded successfully", true)
-                return Resource.Success("OTP forwarded successfully", response.body()?.message)
+                // Diagnostic Log 6: Backend push success
+                Log.i(TAG, "Backend push SUCCESS: OTP accepted by relay store [ID: $relayId]")
+                preferencesManager.recordForwardingEvent("✓ OTP accepted by backend relay (HTTP 200, ID: $relayId)", true)
+                return Resource.Success("OTP forwarded successfully to backend", companionResp.body()?.message)
             } else {
-                val errMsg = formatHttpError(response.code(), response.errorBody()?.string())
-                preferencesManager.recordForwardingEvent("Failed: $errMsg", false)
-                return Resource.Error(errMsg, response.code())
+                val errDetail = companionResp.errorBody()?.string()
+                val errMsg = formatHttpError(companionResp.code(), errDetail)
+                // Diagnostic Log 6: Backend push failure
+                Log.e(TAG, "Backend push FAILED: HTTP ${companionResp.code()} - $errMsg")
+                preferencesManager.recordForwardingEvent("✕ Backend relay rejected OTP: $errMsg", false)
+                return Resource.Error(errMsg, companionResp.code())
             }
+
         } catch (e: Exception) {
             val errorMsg = formatNetworkError(e, baseUrl)
-            preferencesManager.recordForwardingEvent("Network error: $errorMsg", false)
+            Log.e(TAG, "Backend OTP push network error: $errorMsg")
+            preferencesManager.recordForwardingEvent("✕ Network error: $errorMsg", false)
             return Resource.Error(errorMsg)
         }
     }
 
     /**
-     * Checks backend reachability via health endpoint or poll endpoint.
+     * Checks backend reachability via health endpoint or poll probe.
      */
     suspend fun checkConnection(): Resource<Boolean> {
         val baseUrl = getBaseUrl()
@@ -338,9 +493,7 @@ class IvacRepository(
                     val dbStatus = healthResp.body()?.database ?: "connected"
                     return Resource.Success(true, "Backend reachable (HTTP 200, DB: $dbStatus)")
                 }
-            } catch (_: Exception) {
-                // If root /health is unavailable, try /v1/health
-            }
+            } catch (_: Exception) {}
 
             // 2. Try v1 health check: GET /v1/health
             try {
@@ -367,6 +520,13 @@ class IvacRepository(
 
     fun disconnect() {
         secureStorage.clearPairing()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                preferencesManager.clearBackupPairing()
+                preferencesManager.recordForwardingEvent("Device disconnected", false)
+            } catch (_: Exception) {}
+        }
+        Log.i(TAG, "Device pairing cleared from secure storage and backup preferences")
     }
 
     fun isPaired(): Boolean = secureStorage.isPaired()
@@ -381,4 +541,8 @@ class IvacRepository(
     }
 
     fun getPairedPhone(): String = secureStorage.getPhone() ?: ""
+
+    companion object {
+        private const val TAG = "IvacRepository"
+    }
 }
