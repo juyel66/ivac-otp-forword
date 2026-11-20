@@ -81,11 +81,20 @@ interface IvacApiService {
     ): Response<OtpPollResponse>
 
     /**
-     * Single-step pairing verification endpoint (for compatibility).
+     * Single-step pairing verification endpoint.
+     * POST /v1/companion/pair/verify
+     */
+    @POST("companion/pair/verify")
+    suspend fun verifyPairing(
+        @Body request: PairVerifyRequest
+    ): Response<PairVerifyResponse>
+
+    /**
+     * Single-step pairing verification alias.
      * POST /v1/companion/pair
      */
     @POST("companion/pair")
-    suspend fun verifyPairing(
+    suspend fun verifyPairingAlias(
         @Body request: PairVerifyRequest
     ): Response<PairVerifyResponse>
 }
