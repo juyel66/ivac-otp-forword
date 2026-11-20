@@ -80,6 +80,9 @@ fun AppNavigation(viewModel: MainViewModel) {
                 },
                 onProceedToPermission = {
                     viewModel.navigateTo(AppScreen.SMS_PERMISSION)
+                },
+                onOpenSettings = {
+                    viewModel.navigateTo(AppScreen.SETTINGS)
                 }
             )
         }
