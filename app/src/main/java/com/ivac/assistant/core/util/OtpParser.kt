@@ -9,15 +9,17 @@ import java.util.regex.Pattern
  * Specializes in:
  * 1. English spoken number-words to numeric conversion:
  *    Zero=0, One=1, Two=2, Three=3, Four=4, Five=5, Six=6, Seven=7, Eight=8, Nine=9
- *    (e.g. "Two-Nine-Two-Four-Zero-Nine." -> "292409")
+ *    Supports both NEW format (Underscore: Six_Two_Eight_One_Five_Four)
+ *    and OLD format (Hyphen: One-Zero-Zero-Seven-Eight-Two), spaces, mixed separators.
  * 2. Strict IVAC sender & security phrase filtering (e.g. IVAC_BD, IVACBD)
- * 3. Fallback support for standard 6-digit numeric codes and Bengali digits.
+ * 3. Fallback support for standard 6-digit numeric codes and Bengali digits in IVAC context.
  *
  * SECURITY & PRIVACY RULES:
  * - Never log extracted OTP digits.
  * - Discard unrelated SMS (bKash, Nagad, Gmail, Banks, etc.) immediately.
  * - Preserve leading zeros.
  * - Reject incomplete, ambiguous, or invalid sequences.
+ * - Never convert OTPs to integers. Always preserve them as strings.
  */
 object OtpParser {
 
@@ -25,16 +27,28 @@ object OtpParser {
         "IVAC_BD",
         "IVACBD",
         "IVAC",
+        "IVAC-BD",
+        "AD-IVAC",
+        "AD-IVACBD",
+        "MD-IVAC",
+        "MD-IVACBD",
+        "VK-IVAC",
+        "VK-IVACBD",
+        "BL-IVAC",
+        "BL-IVACBD",
+        "GP-IVAC",
+        "GP-IVACBD",
+        "ROBI-IVAC",
+        "ROBI-IVACBD",
+        "AIRTEL-IVAC",
+        "AIRTEL-IVACBD",
+        "TELETALK",
         "BTCL",
         "INFOSMS",
-        "AD-IVAC",
-        "MD-IVAC",
-        "VK-IVAC",
-        "BL-IVAC",
-        "GP-IVAC",
-        "ROBI-IVAC",
-        "AIRTEL-IVAC",
-        "TELETALK"
+        "INFO_SMS",
+        "BD-IVAC",
+        "BDI-IVAC",
+        "BDI-IVACBD"
     )
 
     val DEFAULT_KEYWORD_PATTERNS = listOf(
@@ -101,8 +115,11 @@ object OtpParser {
         '৫' to '5', '৬' to '6', '৭' to '7', '৮' to '8', '৯' to '9'
     )
 
-    private val NUMBER_WORD_REGEX = Regex("(?i)\\b(zero|one|two|three|four|five|six|seven|eight|nine)\\b")
-    private val ALLOWED_SEPARATOR_REGEX = Regex("^[-\\s,]+$")
+    // Regex matches digit words bounded by non-letters (allowing underscores, hyphens, spaces, punctuation)
+    private val NUMBER_WORD_REGEX = Regex("(?i)(?<![a-zA-Z])(zero|one|two|three|four|five|six|seven|eight|nine)(?![a-zA-Z])")
+
+    // Allows underscores, hyphens, spaces, dots, commas between consecutive digit words
+    private val ALLOWED_SEPARATOR_REGEX = Regex("^[\\s_\\-,\\.]+$")
 
     /**
      * Converts an individual English number word to a numeric character (0-9).
@@ -127,9 +144,10 @@ object OtpParser {
         }
 
         val normalizedSender = cleanSender.replace("_", "").replace("-", "")
+        val patterns = if (allowedPatterns.isEmpty()) DEFAULT_SENDER_PATTERNS else allowedPatterns
 
         // 2. Check allowlist
-        return allowedPatterns.any { pattern ->
+        return patterns.any { pattern ->
             val cleanPattern = pattern.trim().uppercase(Locale.ROOT)
             val normalizedPattern = cleanPattern.replace("_", "").replace("-", "")
 
@@ -152,8 +170,10 @@ object OtpParser {
             return false
         }
 
+        val keywords = if (requiredKeywords.isEmpty()) DEFAULT_KEYWORD_PATTERNS else requiredKeywords
+
         // 2. Check for required IVAC keywords or security phrases
-        return requiredKeywords.any { keyword ->
+        return keywords.any { keyword ->
             upperBody.contains(keyword.uppercase(Locale.ROOT))
         }
     }
@@ -161,28 +181,46 @@ object OtpParser {
     /**
      * Extracts a 6-digit OTP from message text.
      *
-     * Prioritizes contiguous English number-word sequences (e.g. "Two-Nine-Two-Four-Zero-Nine").
-     * Falls back to standard 6-digit numeric codes and Bengali numerals.
+     * Prioritizes contiguous English number-word sequences:
+     * - Underscore-separated: "Six_Two_Eight_One_Five_Four" -> "628154"
+     * - Hyphen-separated: "One-Zero-Zero-Seven-Eight-Two" -> "100782"
+     * - Spaces, mixed separators, optional whitespace, trailing punctuation.
+     * - Preserves leading zeros.
      *
-     * Returns null if no valid, unambiguous 6-digit OTP is found.
+     * Falls back to standard 6-digit numeric codes and Bengali numerals ONLY in verified IVAC context.
+     *
+     * Returns null if no valid, unambiguous 6-digit OTP is found, or if the message is unrelated/unauthenticated.
      */
     fun extractOtp(body: String?): String? {
         if (body.isNullOrBlank()) return null
 
-        // 1. Primary: Word-form extraction (Two-Nine-Two-Four-Zero-Nine -> 292409)
+        val upperBody = body.uppercase(Locale.ROOT)
+
+        // 1. Immediately reject messages containing blocked financial / banking keywords
+        if (BLOCKED_KEYWORDS.any { upperBody.contains(it) }) {
+            return null
+        }
+
+        // 2. Primary: Word-form extraction (Six_Two_Eight_One_Five_Four -> 628154, Two-Nine-Two-Four-Zero-Nine -> 292409)
         val wordFormOtp = extractWordFormOtp(body)
         if (wordFormOtp != null && wordFormOtp.length == 6) {
             return wordFormOtp
         }
 
-        // 2. Fallback: Normalize Bengali digits to English digits if present
+        // 3. Fallback: Numeric / Bengali digits extraction requires verified IVAC context
+        if (!hasIvacContext(body)) {
+            return null
+        }
+
+        // 4. Normalize Bengali digits to English digits if present
         val normalizedBody = normalizeBengaliDigits(body)
 
-        // 3. Fallback: Numeric 6-digit regex
+        // 5. Strict numeric 6-digit regex within IVAC context
+        // Bound by non-digits to avoid extracting parts of phone numbers, timestamps, or longer sequences
         val patterns = listOf(
-            Pattern.compile("(?i)(?:otp|code|verification|sequence)[^0-9a-z]{0,10}([0-9]{6})\\b"),
-            Pattern.compile("(?i)(?:is|are)[^0-9a-z]{0,5}([0-9]{6})\\b"),
-            Pattern.compile("\\b([0-9]{6})\\b")
+            Pattern.compile("(?i)(?:otp|code|verification|sequence)[^0-9a-z]{0,10}(?<!\\d)([0-9]{6})(?!\\d)"),
+            Pattern.compile("(?i)(?:is|are)[^0-9a-z]{0,5}(?<!\\d)([0-9]{6})(?!\\d)"),
+            Pattern.compile("(?<!\\d)([0-9]{6})(?!\\d)")
         )
 
         for (pattern in patterns) {
@@ -199,13 +237,14 @@ object OtpParser {
     }
 
     /**
-     * Extracts spoken word-form numbers: "Two-Nine-Two-Four-Zero-Nine", "Three-Zero-Zero-Seven-Seven-Two", etc.
+     * Extracts spoken word-form numbers: "Six_Two_Eight_One_Five_Four", "One-Zero-Zero-Seven-Eight-Two", etc.
      *
      * Requirements satisfied:
+     * - Supports both NEW underscore separator ("Six_Two_Eight_One_Five_Four") and OLD hyphen separator ("One-Zero-Zero-Seven-Eight-Two").
      * - Case-insensitive parsing.
-     * - Supports hyphens, spaces, line breaks, commas, and trailing punctuation.
-     * - Preserves leading zeros (e.g. Zero-One-Two-... -> 012...).
-     * - Returns exactly six digits.
+     * - Supports hyphens, underscores, spaces, line breaks, commas, dots, and trailing punctuation.
+     * - Preserves leading zeros (e.g. Zero_Zero_One_Two_Three_Four -> 001234).
+     * - Returns exactly six digits as a string (never converted to integer).
      * - Rejects incomplete sequences (e.g. 5 words -> null).
      * - Rejects sequences longer than 6 words (e.g. 7 words -> null).
      * - Rejects sequences interrupted by arbitrary words.
