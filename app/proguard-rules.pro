@@ -22,3 +22,13 @@
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }
 
+# Android Components & Receivers
+-keep class com.ivac.assistant.core.receiver.** { *; }
+-keep class com.ivac.assistant.core.service.** { *; }
+-keep class com.ivac.assistant.core.data.security.** { *; }
+-keep class com.ivac.assistant.core.data.repository.** { *; }
+-keep class com.ivac.assistant.core.util.** { *; }
+-keep class com.ivac.assistant.IvacApplication { *; }
+-keep class com.ivac.assistant.MainActivity { *; }
+
+
