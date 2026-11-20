@@ -13,7 +13,15 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.ivac.assistant.BuildConfig
 import com.ivac.assistant.core.util.OtpParser
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
+
+data class ForwardingSettings(
+    val isEnabled: Boolean = true,
+    val senderFilters: Set<String> = OtpParser.DEFAULT_SENDER_PATTERNS.toSet(),
+    val keywordFilters: Set<String> = OtpParser.DEFAULT_KEYWORD_PATTERNS.toSet()
+)
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ivac_assistant_settings")
 
@@ -52,6 +60,24 @@ class PreferencesManager(private val context: Context) {
 
     val isBatteryGuideDismissed: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[KEY_BATTERY_GUIDE_DISMISSED] ?: false
+    }
+
+    suspend fun getForwardingSettings(): ForwardingSettings {
+        return try {
+            withTimeoutOrNull(2000L) {
+                context.dataStore.data.map { prefs ->
+                    ForwardingSettings(
+                        isEnabled = prefs[KEY_SMS_FORWARDING_ENABLED] ?: true,
+                        senderFilters = prefs[KEY_SENDER_FILTERS]?.takeIf { it.isNotEmpty() }
+                            ?: OtpParser.DEFAULT_SENDER_PATTERNS.toSet(),
+                        keywordFilters = prefs[KEY_KEYWORD_FILTERS]?.takeIf { it.isNotEmpty() }
+                            ?: OtpParser.DEFAULT_KEYWORD_PATTERNS.toSet()
+                    )
+                }.first()
+            } ?: ForwardingSettings()
+        } catch (e: Exception) {
+            ForwardingSettings()
+        }
     }
 
     suspend fun setSmsForwardingEnabled(enabled: Boolean) {
@@ -96,6 +122,36 @@ class PreferencesManager(private val context: Context) {
         }
     }
 
+    suspend fun saveBackupPairing(pairCode: String, phone: String, deviceToken: String?) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_STORED_PAIR_CODE] = pairCode.trim()
+            prefs[KEY_STORED_PHONE] = phone.trim()
+            if (!deviceToken.isNullOrBlank()) {
+                prefs[KEY_STORED_DEVICE_TOKEN] = deviceToken.trim()
+            } else {
+                prefs.remove(KEY_STORED_DEVICE_TOKEN)
+            }
+        }
+    }
+
+    suspend fun clearBackupPairing() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(KEY_STORED_PAIR_CODE)
+            prefs.remove(KEY_STORED_PHONE)
+            prefs.remove(KEY_STORED_DEVICE_TOKEN)
+        }
+    }
+
+    suspend fun getBackupDeviceToken(): String? {
+        return try {
+            withTimeoutOrNull(1500L) {
+                context.dataStore.data.map { it[KEY_STORED_DEVICE_TOKEN] }.first()
+            }?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun resetAll() {
         context.dataStore.edit { prefs ->
             prefs.clear()
@@ -111,6 +167,9 @@ class PreferencesManager(private val context: Context) {
         private val KEY_SENDER_FILTERS = stringSetPreferencesKey("pref_sender_filters")
         private val KEY_KEYWORD_FILTERS = stringSetPreferencesKey("pref_keyword_filters")
         private val KEY_BATTERY_GUIDE_DISMISSED = booleanPreferencesKey("pref_battery_guide_dismissed")
+        private val KEY_STORED_DEVICE_TOKEN = stringPreferencesKey("pref_stored_device_token")
+        private val KEY_STORED_PAIR_CODE = stringPreferencesKey("pref_stored_pair_code")
+        private val KEY_STORED_PHONE = stringPreferencesKey("pref_stored_phone")
     }
 }
 
